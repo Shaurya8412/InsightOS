@@ -1,0 +1,33 @@
+[project]
+name = "insightos"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.141.1",
+    "google-genai>=2.17.0",
+    "httpx>=0.28.1",
+    "pydantic-settings>=2.15.0",
+    "pymupdf>=1.28.2",
+    "pytest>=9.1.1",
+    "qdrant-client>=1.19.0",
+    "uvicorn>=0.52.1",
+    "python-multipart>=0.0.18",
+    "streamlit>=1.35.0",
+    "sqlalchemy>=2.0.25",
+]
+
+[project.scripts]
+insightos = "insightos:main"
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = [
+    "integration: marks tests that require live external services (deselect with '-m not integration')",
+]
