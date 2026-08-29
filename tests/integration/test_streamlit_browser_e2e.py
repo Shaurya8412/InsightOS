@@ -129,8 +129,7 @@ def test_streamlit_e2e_flow():
                 print("Click delete button...")
                 
                 # Wait for document to disappear from library UI
-                page.wait_for_timeout(5000)
-                assert page.get_by_role("button", name="Delete 🗑️").count() == 0, "Document Delete button still exists in library UI"
+                page.wait_for_selector("text=Delete 🗑️", state="detached", timeout=30000)
                 print("Library UI deletion verified.")
                 
                 # Verify in SQLite via FastAPI
