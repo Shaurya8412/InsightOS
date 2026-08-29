@@ -100,11 +100,15 @@ def test_streamlit_e2e_flow():
             # Query input
             query_input = page.get_by_placeholder("e.g. What is the architecture of RAG?")
             query_input.fill("What embedding model does InsightOS use?")
-            page.keyboard.press("Enter")
-            print("Submitted query...")
+            page.screenshot(path="tests/integration/before_query_screenshot.png")
+            
+            # Click Send Query button
+            page.get_by_role("button", name="Send Query").click()
+            print("Clicked Send Query...")
             
             # Wait for assistant response bubble
             page.wait_for_timeout(10000)  # Wait for LLM generation
+            page.screenshot(path="tests/integration/after_query_screenshot.png")
             
             # Verify answer text contains correct model info
             content = page.content()
