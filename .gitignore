@@ -18,3 +18,4 @@ wheels/
 # Test artifacts and caches
 .pytest_cache/
 test_document.pdf
+*.png

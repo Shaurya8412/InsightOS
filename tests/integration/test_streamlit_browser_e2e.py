@@ -21,6 +21,25 @@ def wait_for_url(url, timeout=15):
 
 @pytest.mark.integration
 def test_streamlit_e2e_flow():
+    # 0. Clean DB and Qdrant to ensure test isolation
+    from src.core.database import SessionLocal
+    from src.models.db_models import Document
+    from qdrant_client import QdrantClient
+    
+    db = SessionLocal()
+    try:
+        db.query(Document).delete()
+        db.commit()
+    finally:
+        db.close()
+        
+    try:
+        qc = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY)
+        if qc.collection_exists(settings.QDRANT_COLLECTION_NAME):
+            qc.delete_collection(settings.QDRANT_COLLECTION_NAME)
+    except Exception as e:
+        print("Cleanup collections failed:", e)
+
     # 1. Start FastAPI backend
     backend_proc = subprocess.Popen(
         [".venv/Scripts/python.exe", "-m", "uvicorn", "src.main:app", "--port", "8000", "--host", "127.0.0.1"]
@@ -44,6 +63,7 @@ def test_streamlit_e2e_flow():
             page = browser.new_page()
             
             # Go to streamlit page
+            page.on("console", lambda msg: print(f"Browser console: {msg.text}"))
             page.goto("http://127.0.0.1:8501")
             
             # Allow page loading
@@ -54,12 +74,17 @@ def test_streamlit_e2e_flow():
             print("Streamlit UI opened successfully.")
             
             # Upload document
-            file_input = page.locator("input[type='file']")
-            file_input.set_input_files("test_document.pdf")
-            print("Uploading test_document.pdf...")
-            
-            # Wait for upload status to change to INDEXED
-            page.wait_for_selector("text=INDEXED", timeout=30000)
+            try:
+                file_input = page.locator("input[type='file']")
+                file_input.set_input_files("test_document.pdf")
+                print("Uploading test_document.pdf...")
+                
+                # Wait for upload status to change to INDEXED
+                page.wait_for_selector("text=INDEXED", timeout=30000)
+            except Exception as e:
+                page.screenshot(path="tests/integration/failure_screenshot.png")
+                print("Screenshot saved to tests/integration/failure_screenshot.png")
+                raise e
             print("Ingestion center: INDEXED status reached.")
             
             # Verify database entry using FastAPI endpoint
