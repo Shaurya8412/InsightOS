@@ -98,7 +98,7 @@ def test_streamlit_e2e_flow():
                 print(f"Verified SQLite document state: {uploaded_doc['status']}")
             
             # Query input
-            query_input = page.get_by_placeholder("Ask a question about your documents...")
+            query_input = page.get_by_placeholder("e.g. What is the architecture of RAG?")
             query_input.fill("What embedding model does InsightOS use?")
             page.keyboard.press("Enter")
             print("Submitted query...")
@@ -138,7 +138,7 @@ def test_streamlit_e2e_flow():
             print("SQLite deletion verified.")
             
             # Query again to verify post-deletion behavior
-            query_input = page.get_by_placeholder("Ask a question about your documents...")
+            query_input = page.get_by_placeholder("e.g. What is the architecture of RAG?")
             query_input.fill("What embedding model does InsightOS use?")
             page.keyboard.press("Enter")
             print("Submitted post-deletion query...")
