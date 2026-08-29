@@ -102,12 +102,12 @@ def test_streamlit_e2e_flow():
             query_input.fill("What embedding model does InsightOS use?")
             page.screenshot(path="tests/integration/before_query_screenshot.png")
             
-            # Click Send Query button
-            page.get_by_role("button", name="Send Query").click()
-            print("Clicked Send Query...")
+            # Submit query by pressing Enter
+            query_input.press("Enter")
+            print("Pressed Enter on query input...")
             
             # Wait for assistant response bubble
-            page.wait_for_timeout(10000)  # Wait for LLM generation
+            page.wait_for_selector("div.chat-assistant", timeout=30000)
             page.screenshot(path="tests/integration/after_query_screenshot.png")
             
             # Verify answer text contains correct model info
@@ -144,9 +144,11 @@ def test_streamlit_e2e_flow():
             # Query again to verify post-deletion behavior
             query_input = page.get_by_placeholder("e.g. What is the architecture of RAG?")
             query_input.fill("What embedding model does InsightOS use?")
-            page.keyboard.press("Enter")
+            query_input.press("Enter")
             print("Submitted post-deletion query...")
-            page.wait_for_timeout(10000)
+            
+            # Wait for second assistant response bubble (index 1)
+            page.wait_for_selector("div.chat-assistant >> nth=1", timeout=30000)
             
             assert "cannot answer" in page.content().lower() or "not found" in page.content().lower() or "no context" in page.content().lower(), "Post-deletion query response not fallback"
             print("Post-deletion query verified.")
