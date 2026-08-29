@@ -122,6 +122,10 @@ def test_streamlit_e2e_flow():
                 # Wait for Streamlit to settle
                 page.wait_for_timeout(3000)
                 
+                # Clear file uploader first to prevent automatic re-upload upon deletion rerun
+                page.locator("[data-testid='stFileChipDeleteBtn'] button").first.click()
+                page.wait_for_timeout(1000)
+                
                 # Delete document
                 delete_btn = page.get_by_role("button", name="Delete 🗑️").first
                 assert delete_btn.is_visible()
