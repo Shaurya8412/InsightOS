@@ -123,6 +123,9 @@ def test_streamlit_e2e_flow():
             assert "InsightOS" in page.content(), "Citation text not found in UI expander"
             print("Citation UI checked and verified.")
             
+            # Wait for Streamlit to settle
+            page.wait_for_timeout(3000)
+            
             # Delete document
             delete_btn = page.get_by_role("button", name="Delete 🗑️").first
             assert delete_btn.is_visible()
