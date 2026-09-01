@@ -1,155 +1,277 @@
-# InsightOS: Intelligent Grounded Knowledge RAG System
+# InsightOS: Grounded Multimodal Knowledge & RAG System
 
-InsightOS is a local, lightweight Research and Knowledge synthesis engine. It implements a robust, text-first Retrieval-Augmented Generation (RAG) pipeline designed to ingest, process, store, and query complex unstructured documents (PDFs, Markdown, and text files) with deterministic, traceable citations.
+InsightOS was built as a hands-on, practical way to understand how a complete Retrieval-Augmented Generation (RAG) system works end-to-end without relying on black-box orchestration frameworks like LangChain or LlamaIndex.
 
-## The Problem InsightOS Solves
-Knowledge workers, analysts, and developers waste hours cross-referencing information across multiple dense documents. Traditional out-of-the-box LLMs suffer from two critical limitations:
-1. **The "Black Box" Retrieval Gap:** There is no transparency into *what* specific chunks of text the LLM read before responding.
-2. **Untraceable Citations:** LLMs routinely hallucinate reference links or offer generalized, unverifiable sourcing.
-
-InsightOS makes the retrieval pipeline explicit, enforces strict grounding (preventing responses when source documents lack the answer), and provides deterministic citation links mapping retrieved text directly back to its source document and page number.
+Documents are parsed and split into structured chunks, embedded using Google Gemini, stored and indexed in Qdrant Cloud, and retrieved with semantic similarity search when a user asks a question. Every answer is strictly grounded in the retrieved context with verifiable, page-level citations.
 
 ---
 
-## High-Level Architecture
-InsightOS is built with a highly decoupled, modular architecture without relying on heavy wrappers like LangChain or LlamaIndex:
+## Architecture Diagram
 
-```
-[User Ingestion]  --->  [Parsing via PyMuPDF] ---> [Structural Chunking] 
-                                                               |
-                                                               v
-[Qdrant Cloud Vector DB] <--- [Gemini Embeddings] <--- [Data Ingestion Service]
-          |
-          v
-[User Natural Query] ---> [Semantic Top-K Search] ---> [Grounded Prompt Construction] ---> [Gemini LLM Synthesis] ---> [Grounded Answer + Metadata Citations]
+```mermaid
+flowchart TD
+    User(["👤 User"])
+
+    subgraph Client["Client"]
+        Streamlit["Streamlit UI<br/><code>src/frontend/app.py</code>"]
+    end
+
+    subgraph Backend["Backend"]
+        FastAPI["FastAPI App<br/><code>src/main.py</code> · <code>src/api/routes.py</code>"]
+
+        subgraph IngestionFlow["Document Ingestion"]
+            DocIngest["Document Ingestion<br/><code>upload_document()</code>"]
+            Parser["PDF Parsing<br/><code>PyMuPDF / parser.py</code>"]
+            Chunker["Chunking<br/><code>chunk_pages()</code>"]
+        end
+
+        subgraph RAGFlow["RAG Pipeline"]
+            Retrieval["Retrieval<br/><code>retriever.py</code>"]
+            GeminiGen["Gemini Generation<br/><code>generator.py</code>"]
+            CitationBuilder["Citation Builder<br/><code>citation.py</code>"]
+        end
+    end
+
+    subgraph AIServices["AI Services"]
+        GeminiEmbeddings["Gemini Embeddings<br/><code>text-embedding-004</code>"]
+    end
+
+    subgraph Storage["Storage"]
+        Qdrant[("Qdrant Cloud<br/><i>Vector Store</i>")]
+        SQLite[("SQLite<br/><i>Document Metadata</i>")]
+    end
+
+    %% User & Client
+    User -->|"Uploads doc / Asks question"| Streamlit
+    Streamlit -->|"REST API (HTTP)"| FastAPI
+
+    %% Ingestion Flow
+    FastAPI -->|"Upload endpoint"| DocIngest
+    DocIngest -->|"Extract text"| Parser
+    Parser -->|"Pages with metadata"| Chunker
+    Chunker -->|"Text chunks"| GeminiEmbeddings
+    GeminiEmbeddings -->|"Embeddings (768-dim)"| Qdrant
+    DocIngest -->|"Record metadata & status"| SQLite
+
+    %% Retrieval & Generation Flow
+    FastAPI -->|"Query endpoint"| Retrieval
+    Retrieval -->|"Vector similarity search"| Qdrant
+    Qdrant -->|"Top-K context chunks"| Retrieval
+    Retrieval -->|"Context + Question"| GeminiGen
+    GeminiGen -->|"Synthesized response"| CitationBuilder
+    CitationBuilder -->|"Grounded answer with citations"| Streamlit
+    Streamlit -->|"Render answer & sources"| User
+
+    %% Deletion Flow
+    FastAPI -.->|"Delete metadata"| SQLite
+    FastAPI -.->|"Delete vectors by document_id"| Qdrant
 ```
 
-1. **Ingestion & Parsing:** Uploaded documents are parsed using PyMuPDF and split into deterministic segments with exact metadata tracking (`document_id`, `page_number`, `source_location`).
-2. **Database Persistence:** Metadata is logged to a local SQLite tracking database (using SQLAlchemy). Text chunks are embedded and indexed into Qdrant Cloud.
-3. **Retrieval & Orchestration:** Questions trigger semantic similarity searches in Qdrant Cloud. A custom Python orchestrator formats a strict context-bounded prompt.
-4. **Grounded Generation:** Gemini processes the prompt, returning a structured response that references verified sources.
+---
+
+## How InsightOS Works
+
+InsightOS operates through five core sub-systems:
+
+### 1. Document Ingestion & Parsing
+- When a user uploads a PDF, text, or markdown file through the Streamlit interface, it is sent to `POST /api/v1/documents/upload`.
+- The parser (`src/services/ingestion/parser.py`) extracts text page-by-page using PyMuPDF (`fitz`), preserving structural page numbers.
+- The chunker (`src/services/ingestion/chunker.py`) splits page text into configurable segments (500 characters with 50-character sliding overlap) while attaching immutable metadata (`document_id`, `page_number`, `chunk_index`, `source_location`).
+- Document status (`pending`, `indexed`, `failed`) and chunk counts are tracked in SQLite via SQLAlchemy.
+
+### 2. Embedding & Vector Storage
+- Chunks are vectorized using Google Gemini's `text-embedding-004` model via `src/services/embeddings/provider.py`.
+- Vectors (768 dimensions) are upserted into Qdrant Cloud (`src/services/vector_store/qdrant.py`) with payload filters for `document_id`.
+- Cosine distance is used as the similarity metric.
+
+### 3. Semantic Retrieval & Grounded Synthesis
+- When the user asks a question, the query is embedded and sent to Qdrant Cloud to fetch the top-$K$ most relevant chunks.
+- The RAG orchestrator (`src/services/rag/orchestrator.py`) compiles retrieved snippets into a strictly-bounded context prompt.
+- Gemini 2.5 Flash generates a direct response. If the retrieved documents do not contain enough information to answer the question, the system returns a deterministic fallback message rather than hallucinating.
+
+### 4. Citation Resolution & Source Verification
+- The citation resolver (`src/services/rag/citation.py`) detects citation markers in the LLM output and maps them back to the exact source chunk, document name, and page number.
+- In the Streamlit UI, users can expand citations to inspect the raw excerpt that supported each claim.
+
+### 5. Document Management & Deletion
+- Users can view all indexed documents in the sidebar Document Library.
+- Deleting a document removes its metadata record from SQLite and triggers a payload-filtered vector purge in Qdrant Cloud.
 
 ---
 
 ## Repository Structure
-The repository is structured to maintain a clean separation of concerns:
 
 ```
 InsightOS/
 │
 ├── src/
-│   ├── api/             # FastAPI REST endpoints and routes
-│   ├── core/            # App configurations, database connections, and custom exceptions
-│   ├── models/          # SQLAlchemy DB models and Pydantic schemas
-│   ├── services/        # Business logic services (embedding, ingestion, RAG, vector store)
-│   │   ├── embeddings/  # Gemini Embedding API wrapper
-│   │   ├── ingestion/   # Document parsing and text chunking logic
-│   │   ├── rag/         # Orchestrator, citation resolver, and LLM generator
-│   │   └── vector_store/# Qdrant client connection and operation handlers
-│   └── main.py          # FastAPI application entry point
+│   ├── api/
+│   │   ├── __init__.py
+│   │   └── routes.py              # FastAPI REST endpoints (/upload, /query, /documents)
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── config.py              # Pydantic Settings & environment variables
+│   │   ├── database.py            # SQLAlchemy database engine and session factory
+│   │   └── exceptions.py          # Custom domain exception hierarchy
+│   ├── frontend/
+│   │   ├── __init__.py
+│   │   ├── api_client.py          # Backend HTTP client wrapper
+│   │   └── app.py                 # Streamlit UI dashboard & chat interface
+│   ├── models/
+│   │   ├── __init__.py
+│   │   ├── db_models.py           # SQLAlchemy ORM models (Document, Chunk)
+│   │   └── schemas.py             # Pydantic request & response schemas
+│   ├── services/
+│   │   ├── __init__.py
+│   │   ├── embeddings/
+│   │   │   ├── __init__.py
+│   │   │   └── provider.py        # Gemini embedding provider implementation
+│   │   ├── ingestion/
+│   │   │   ├── __init__.py
+│   │   │   ├── chunker.py         # Text chunking with sliding window overlap
+│   │   │   └── parser.py          # PDF/Text extraction with PyMuPDF
+│   │   ├── rag/
+│   │   │   ├── __init__.py
+│   │   │   ├── citation.py        # Citation mapper & source resolver
+│   │   │   ├── generator.py       # Gemini grounded generation client
+│   │   │   ├── orchestrator.py    # End-to-end RAG workflow orchestrator
+│   │   └── retriever.py           # Semantic vector retrieval service
+│   │   └── vector_store/
+│   │       ├── __init__.py
+│   │       ├── provider.py        # Vector store interface definition
+│   │       └── qdrant.py          # Qdrant Cloud client wrapper & collection management
+│   └── main.py                    # FastAPI application initialization & lifecycle
 │
 ├── tests/
-│   ├── integration/     # E2E pipeline integration tests (running on live APIs)
-│   └── unit/            # Isolated mock unit tests for api, service layers, and store
+│   ├── integration/
+│   │   ├── __init__.py
+│   │   ├── test_retrieval_integration.py     # Live API integration tests (Qdrant & Gemini)
+│   │   └── test_streamlit_browser_e2e.py     # Playwright E2E browser automation tests
+│   └── unit/
+│       ├── __init__.py
+│       ├── test_api.py            # REST endpoint unit tests
+│       ├── test_chunker.py        # Chunking boundary & overlap tests
+│       ├── test_citation.py       # Citation mapping tests
+│       ├── test_config.py         # Configuration loading tests
+│       ├── test_database.py       # SQLAlchemy SQLite repository tests
+│       ├── test_embeddings.py     # Embedding provider mock & edge case tests
+│       ├── test_frontend.py       # Frontend API client tests
+│       ├── test_generator.py      # LLM generator tests
+│       ├── test_models.py         # Pydantic schema validation tests
+│       ├── test_orchestrator.py   # RAG pipeline orchestration tests
+│       ├── test_parser.py         # PyMuPDF parser tests
+│       ├── test_retriever.py      # Semantic retriever tests
+│       └── test_vector_store.py   # Qdrant vector store unit & integration tests
 │
-├── .gitignore           # Excludes local configuration, databases, test caches, and env files
-├── README.md            # Product specification and developer guide
-├── pyproject.toml       # Dependency declaration and python configuration
-└── uv.lock              # Lock file for deterministic python environments
+├── .gitignore                     # Git ignore rules (.env, *.db, *.png, etc.)
+├── pyproject.toml                 # Project metadata, dependencies, and tools
+├── README.md                      # Project documentation and architecture guide
+└── uv.lock                        # Lockfile for reproducible dependencies
 ```
 
 ---
 
-## Main Technologies Used
-*   **API Framework:** [FastAPI](https://fastapi.tiangolo.com/) with Pydantic for validation.
-*   **Embedding & LLM APIs:** [Google GenAI SDK](https://github.com/google/generative-ai-python) (`text-embedding-004` and `gemini-3.6-flash`).
-*   **Vector Database:** [Qdrant Cloud](https://qdrant.tech/) via the official python client wrapper.
-*   **Document Processor:** [PyMuPDF](https://pymupdf.readthedocs.io/) for fast, robust text extraction.
-*   **Metadata DB:** [SQLAlchemy](https://www.sqlalchemy.org/) + [SQLite](https://www.sqlite.org/).
-*   **Frontend UI:** [Streamlit](https://streamlit.io/) for a simple upload and research interface.
-*   **Environment & Python Runner:** [uv](https://github.com/astral-sh/uv) (from Astral) for blazingly fast dependency management.
+## Technology Stack
+
+| Layer | Technology | Purpose |
+|---|---|---|
+| **API Framework** | FastAPI | REST API endpoints for ingestion, query, and document management |
+| **Frontend UI** | Streamlit | Web interface for file upload, document library, and chat interaction |
+| **Embeddings** | Google Gemini `text-embedding-004` | 768-dimensional semantic text embeddings |
+| **LLM Generation** | Google Gemini `gemini-2.5-flash` | Grounded answer generation and context synthesis |
+| **Vector Database** | Qdrant Cloud | Remote vector indexing, cosine search, and payload filtering |
+| **Document Parsing** | PyMuPDF (`pymupdf`) | Fast, accurate PDF text extraction with page metadata |
+| **Metadata DB** | SQLite + SQLAlchemy | Document tracking, chunk counts, and status persistence |
+| **Browser Testing** | Playwright | Headless Chromium end-to-end browser verification |
+| **Package Manager** | `uv` / `pip` | Fast Python dependency management |
 
 ---
 
-## Installation & Local Configuration
+## Setup & Running Locally
 
 ### 1. Prerequisites
-Ensure you have Python 3.11+ installed. It is recommended to use `uv` for setup:
-```bash
-pip install uv
-```
+- Python 3.11+
+- A Google Gemini API key ([Google AI Studio](https://aistudio.google.com/))
+- A Qdrant Cloud cluster and API key ([Qdrant Cloud](https://cloud.qdrant.io/))
 
-### 2. Clone and Initialize Virtual Environment
-Initialize the environment and sync dependencies:
+### 2. Installation
+Clone the repository and install dependencies inside a virtual environment:
 ```bash
+# Using uv (recommended)
 uv venv
-.venv\Scripts\activate      # On Windows
-source .venv/bin/activate    # On macOS/Linux
+.venv\Scripts\activate      # Windows
+source .venv/bin/activate    # Linux / macOS
 uv pip install -e .
+
+# Or using standard pip
+python -m venv .venv
+.venv\Scripts\activate      # Windows
+source .venv/bin/activate    # Linux / macOS
+pip install -e .
 ```
 
-### 3. Environment Variables (.env)
+Install Playwright browser binaries (for E2E browser tests):
+```bash
+playwright install chromium
+```
+
+### 3. Environment Configuration
 Create a `.env` file in the project root:
 ```env
 # Database Settings
 SQLITE_DB_URL="sqlite:///./insightos.db"
 
-# API Keys (Never commit these to git!)
+# API Keys & Endpoints (Never commit .env to GitHub)
 GEMINI_API_KEY="your-gemini-api-key"
-QDRANT_API_KEY="your-qdrant-cluster-api-key"
-QDRANT_URL="https://your-qdrant-cluster-url.aws.cloud.qdrant.io"
+QDRANT_API_KEY="your-qdrant-api-key"
+QDRANT_URL="https://your-cluster-id.eu-west-2-0.aws.cloud.qdrant.io"
 
-# Default Model Overrides (Optional)
-LLM_MODEL="gemini-3.6-flash"
+# Optional Model Overrides
+LLM_MODEL="gemini-2.5-flash"
 EMBEDDING_MODEL="text-embedding-004"
 ```
 
----
+### 4. Running the Application
 
-## Running the Application
-
-### 1. Initialize SQLite Tables
-Run the database creation step to initialize SQLite schemas:
-```bash
-.venv\Scripts\python.exe -c "from src.core.database import init_db; from src.models.db_models import Document; init_db()"
-```
-
-### 2. Start FastAPI Backend
+**Step 1: Start the FastAPI Backend**
 ```bash
 .venv\Scripts\python.exe -m uvicorn src.main:app --port 8000 --reload
 ```
-You can verify the backend is up and running by opening `http://127.0.0.1:8000/health`.
+Backend health check: `http://127.0.0.1:8000/health`  
+Interactive API Docs (Swagger): `http://127.0.0.1:8000/docs`
 
-### 3. Start Streamlit Frontend
-In a new terminal window:
+**Step 2: Start the Streamlit Frontend**
+In a separate terminal:
 ```bash
 .venv\Scripts\python.exe -m streamlit run src/frontend/app.py
 ```
-Open `http://127.0.0.1:8501` in your browser to interact with the UI.
+Open `http://127.0.0.1:8501` in your browser.
 
 ---
 
-## Testing & Verification
-We maintain a comprehensive suite of unit (using mocks) and integration (running on live endpoints) tests.
+## Running Tests
 
-Run the entire test suite:
+InsightOS includes a test suite covering unit tests, live integration tests, and Playwright browser E2E tests.
+
 ```bash
+# Run all tests (183 items)
 .venv\Scripts\python.exe -m pytest
-```
 
-Run only unit tests (safe to run without internet or API credentials):
-```bash
+# Run unit tests only (fast, no external API calls)
 .venv\Scripts\python.exe -m pytest tests/unit/
-```
 
-Run live integration tests (requires valid `.env` credentials):
-```bash
-.venv\Scripts\python.exe -m pytest tests/integration/
+# Run live API integration tests (requires valid .env)
+.venv\Scripts\python.exe -m pytest tests/integration/test_retrieval_integration.py
+
+# Run Playwright browser E2E tests
+.venv\Scripts\python.exe -m pytest tests/integration/test_streamlit_browser_e2e.py
 ```
 
 ---
 
-## Important Development Notes
-*   **Vector Normalization:** In Qdrant, Cosine similarity vectors are L2-normalized upon ingestion. For custom unit/integration tests matching vectors, utilize unit vectors (e.g. `[1.0] + [0.0] * 127`) to avoid normalization discrepancies.
-*   **Payload Indexing:** Qdrant Cloud requires a payload index for filtering operations (including delete with filter) on custom attributes like `document_id`. The application automatically indexes this field upon collection initialization.
-*   **No-Context Enforcement:** Prompts bound the LLM strictly to the provided document context. If a user query cannot be resolved via retrieved chunks, the orchestrator returns a standard grounding fallback rather than guessing or hallucinating answers.
+## Key Implementation Details
+
+1. **Explicit RAG Pipeline:** We intentionally avoid high-level RAG frameworks to maintain full control over chunking strategies, vector payload schema, retrieval scoring, and prompt bounding.
+2. **Payload Indexing in Qdrant:** Qdrant Cloud requires a payload index on filtered attributes like `document_id`. The client automatically verifies and creates the keyword payload index upon collection initialization.
+3. **Deterministic Citations:** Citations are not generic web links; they are resolved directly against the retrieved chunk IDs and source page numbers returned by Qdrant.
+4. **Grounding Fallback:** When retrieved chunks do not contain sufficient context, the generator returns a standard fallback message to prevent hallucinations.
